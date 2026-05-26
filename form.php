@@ -1,154 +1,288 @@
-// Словарь ошибок для каждого поля формы
-const fielderrors = {
-    name: "ФИО должно быть полностью на кириллице: фамилия, имя и отчество, разделённые пробелами. Разрешены только буквы, минимум три слова (например: Петров Иван Сергеевич).",
-    phone: "Укажите номер телефона в формате +XXXXXXXXXXX. Допустимы только цифры после знака '+'.",
-    email: "Введите действительный адрес электронной почты в формате username@domain.com. Разрешены буквы, цифры, точки, дефисы и символ '@'.",
-    dob: "Укажите дату рождения в формате ГГГГ-ММ-ДД (например: 2000-01-01).",
-    gender: "Поле обязательно. Выберите «М» (мужской) или «Ж» (женский).",
-    languages: "Выберите как минимум один язык программирования из предложенного списка. Допускается множественный выбор.",
-    bio: "Поле может содержать буквы (кириллица и латиница), цифры, пробелы и символы: \";,.:-!?\".",
-    contract: "Для продолжения требуется подтверждение согласия с условиями — установите флажок."
-};
-document.addEventListener("DOMContentLoaded", function() {
-    const forma = document.getElementById("forma");
-    addErrors(); // Создаём скрытые блоки для сообщений об ошибках
+<?php
+// Начало сессии и подключение к базе данных
+session_start();
+require 'db.php';
 
-    forma.addEventListener("submit", (e) => {
-        e.preventDefault(); // Предотвращаем стандартную отправку формы
-        console.log(e)
-        // Сброс предыдущих ошибок
-        forma.querySelectorAll('.error').forEach(input => input.classList.remove('error'));
-        forma.querySelectorAll('.error-message').forEach(el => el.style.display = 'none');
+// Функции для чтения значений из cookies
+$get      = fn($key) => isset($_COOKIE[$key]) ? htmlspecialchars($_COOKIE[$key]) : '';
+$getArray = fn($key) => isset($_COOKIE[$key]) ? json_decode($_COOKIE[$key], true) : [];
 
-        const formData = new FormData(e.target);
-        const validationResult = validate(formData); // Проверка данных
+// Обработка POST-запроса (обычного или AJAX)
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-        if (validationResult) {
-            showErrors(validationResult); // Показываем ошибки, если есть
-        } else {
-            // Подготовка данных к отправке
-            const formObject = Object.fromEntries(formData.entries());
-            formObject.languages = formData.getAll("languages");
-            formObject.contract = formData.get("contract") || null;
-
-            // Отправка данных через fetch
-            fetch(e.target.action, {
-                method: e.target.method,
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(formObject),
-            }).then(res => res.json())
-              .then(data => {
-                  if (data.redirect_url) {
-                      window.location.href = data.redirect_url; // Переход по редиректу
-                  }
-              })
-              .catch(err => console.error(err));
+    // Функция для чтения JSON из тела запроса
+    function getJsonInput(): ?array {
+        $ct = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (stripos($ct, 'application/json') === 0) {
+            $raw  = file_get_contents('php://input');
+            $data = json_decode($raw, true);
+            return is_array($data) ? $data : null;
         }
-    });
-});
-
-// Создаёт элементы для отображения ошибок под полями формы
-const addErrors = () => {
-    for (const [field, message] of Object.entries(fielderrors)) {
-        const input = forma.querySelector(`[name="${field}"]`);
-        if (!input) {
-            console.warn(`Поле с name="${field}" не найдено`);
-            continue;
-        }
-
-        const errorEl = document.createElement("p");
-        errorEl.className = "error-message";
-        errorEl.textContent = fielderrors[field];
-        errorEl.dataset.for = field;
-        errorEl.style.color = "red";
-        errorEl.style.fontSize = "1rem";
-        errorEl.style.display = "none";
-        input.parentNode.insertBefore(errorEl, input); // Вставка ошибки перед полем
+        return null;
     }
-};
 
-// Отображает ошибки под соответствующими полями
-const showErrors = (errors) => {
-    for (const [field, message] of Object.entries(errors)) {
-        const input = forma.querySelector(`[name="${field}"]`);
-        const errorEl = forma.querySelector(`.error-message[data-for="${field}"]`);
-        if (input && errorEl) {
-            input.classList.add('error');
-            errorEl.style.display = 'block';
-        } else {
-            console.warn(`Не найдены элементы для поля: ${field}`);
-        }
+    $json       = getJsonInput();
+    $isAJAX     = $json !== null;
+    $input      = $json ?? $_POST;
+    // Гарантируем, что languages — массив
+    $input['languages'] = isset($input['languages']) 
+        ? (array)$input['languages'] 
+        : [];
+
+    $errors      = [];   // Сообщения об ошибках
+    $errorFields = [];   // Поля с ошибками
+
+    // Валидация ФИО
+    if (empty($input['name'])) {
+        $errors[]      = "Поле ФИО обязательно для заполнения.";
+        $errorFields[] = 'name';
+    } elseif (!preg_match("/^[\p{L}]+\s[\p{L}]+\s[\p{L}]+$/u", $input['name'])) {
+        $errors[]      = "Поле ФИО должно содержать ровно три слова (Иванов Иван Иванович).";
+        $errorFields[] = 'name';
     }
-};
 
-// Выполняет проверку полей формы
-const validate = (data) => {
-    const errors = {};
+    // Валидация телефона
+    if (empty($input['phone'])) {
+        $errors[]      = "Поле Телефон обязательно для заполнения.";
+        $errorFields[] = 'phone';
+    } elseif (!preg_match("/^\+[0-9]{1,15}$/", $input['phone'])) {
+        $errors[]      = "Телефон должен начинаться с '+' и содержать только цифры.";
+        $errorFields[] = 'phone';
+    }
 
-    // Проверка ФИО
-    if (data.get("name")) {
-        const fioRegex = /^[a-zA-Zа-яА-ЯёЁ]{1,}\s[a-zA-Zа-яА-ЯёЁ]{1,}\s[a-zA-Zа-яА-ЯёЁ]{1,}$/;
-        if (!fioRegex.test(data.get("name"))) {
-            errors.name = "Invalid name";
-        }
+    // Валидация e-mail
+    if (empty($input['email'])) {
+        $errors[]      = "Поле E-mail обязательно для заполнения.";
+        $errorFields[] = 'email';
+    } elseif (!filter_var($input['email'], FILTER_VALIDATE_EMAIL)) {
+        $errors[]      = "Некорректный формат E-mail.";
+        $errorFields[] = 'email';
+    }
+
+    // Валидация даты рождения и возраста
+    if (empty($input['dob'])) {
+        $errors[]      = "Поле Дата рождения обязательно для заполнения.";
+        $errorFields[] = 'dob';
     } else {
-        errors.name = "Name is required";
-    }
-
-    // Проверка телефона
-    if (data.get("phone")) {
-        const telRegex = /^\+[0-9]{1,29}$/;
-        if (!telRegex.test(data.get("phone"))) {
-            errors.phone = "Invalid phone";
-        }
-    } else {
-        errors.phone = "Tel is required";
-    }
-
-    // Проверка email
-    if (data.get("email")) {
-        const emailRegex = /^[A-Za-z0-9._%+-]{1,30}@[A-Za-z0-9.-]{1,20}\.[A-Za-z]{1,10}$/;
-        if (!emailRegex.test(data.get("email"))) {
-            errors.email = "Invalid email";
-        }
-    } else {
-        errors.email = "Email is required";
-    }
-
-    // Проверка даты рождения
-    if (data.get("dob")) {
-        const dateRegex = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/;
-        if (!dateRegex.test(data.get("dob"))) {
-            errors.dob = "Invalid date";
-        }
-    } else {
-        errors.dob = "Date is required";
-    }
-
-    // Проверка пола
-    if (!["male", "female"].includes(data.get("gender"))) {
-        errors.gender = "Invalid gender";
-    }
-
-    // Проверка соглашения
-    if (data.get("contract") !== "on") {
-        errors.contract = "Invalid contract checkbox";
-    }
-
-    // Проверка языков
-    if (data.getAll("languages")?.length === 0) {
-        errors.languages = "Favourite langs are required";
-    }
-
-    // Проверка биографии
-    if (data.get("bio")) {
-        const bioRegex = /^[A-Za-zА-Яа-яЁё;,.:0-9\-!?""\s]{0,}$/;
-        if (!bioRegex.test(data.get("bio"))) {
-            errors.bio = "Invalid Bio";
+        $dobObj = DateTime::createFromFormat('Y-m-d', $input['dob']);
+        if (!$dobObj || $dobObj->format('Y-m-d') !== $input['dob']) {
+            $errors[]      = "Некорректный формат даты.";
+            $errorFields[] = 'dob';
+        } elseif ((new DateTime())->diff($dobObj)->y < 18) {
+            $errors[]      = "Вы должны быть старше 18 лет.";
+            $errorFields[] = 'dob';
         }
     }
 
-    return Object.keys(errors).length === 0 ? null : errors;
-};
+    // Валидация прочих полей
+    if (empty($input['gender'])) {
+        $errors[]      = "Поле Пол обязательно для заполнения.";
+        $errorFields[] = 'gender';
+    }
+    if (empty($input['languages'])) {
+        $errors[]      = "Выберите хотя бы один язык программирования.";
+        $errorFields[] = 'languages';
+    }
+    if (!isset($input['contract'])) {
+        $errors[]      = "Необходимо ознакомиться с контрактом.";
+        $errorFields[] = 'contract';
+    }
+
+    // Если есть ошибки — сохраняем их в cookies и возвращаемся к форме
+    if ($errors) {
+        setcookie('errors',       json_encode($errors),      time()+3600, '/');
+        setcookie('error_fields', json_encode($errorFields), time()+3600, '/');
+        // Сохраняем введённые значения для повторного вывода
+        foreach (['name','phone','email','dob','gender','bio'] as $f) {
+            setcookie($f, $input[$f] ?? '', time()+3600, '/');
+        }
+        setcookie('languages', json_encode($input['languages']), time()+3600, '/');
+        setcookie('contract',  $input['contract'] ?? '',       time()+3600, '/');
+
+        if ($isAJAX) {
+            // Возвращаем JSON с указанием редиректа
+            echo json_encode([
+                'success'      => false,
+                'redirect_url' => '/project/index.php',
+            ]);
+            exit;
+        }
+        header('Location: index.php');
+        exit;
+    }
+
+    // Нет ошибок — сохраняем заявку и пользователя
+    try {
+        $pdo->beginTransaction();
+        // Добавляем запись в application
+        $stmt = $pdo->prepare(
+            "INSERT INTO application (name, phone, email, dob, gender, bio)
+             VALUES (:name,:phone,:email,:dob,:gender,:bio)"
+        );
+        $stmt->execute([
+            ':name'   => $input['name'],
+            ':phone'  => $input['phone'],
+            ':email'  => $input['email'],
+            ':dob'    => $input['dob'],
+            ':gender' => $input['gender'],
+            ':bio'    => $input['bio'] ?? ''
+        ]);
+        $appId = $pdo->lastInsertId();
+
+        // Сохраняем выбранные языки
+        $link = $pdo->prepare(
+            "INSERT INTO application_languages (application_id, language_id)
+             VALUES (:aid,(SELECT id FROM languages WHERE name=:lang))"
+        );
+        foreach ($input['languages'] as $lang) {
+            $link->execute([':aid'=>$appId, ':lang'=>$lang]);
+        }
+
+        // Генерируем учётные данные
+        $username = 'user_' . bin2hex(random_bytes(4));
+        $password = bin2hex(random_bytes(4));
+        setcookie('username', $username, time()+3600, '/');
+        setcookie('password', $password, time()+3600, '/');
+        // Сохраняем хеш пароля
+        $u = $pdo->prepare(
+            "INSERT INTO userspr (username, password_hash, application_id)
+             VALUES (:u,:h,:aid)"
+        );
+        $u->execute([
+            ':u'   => $username,
+            ':h'   => password_hash($password, PASSWORD_DEFAULT),
+            ':aid'=> $appId
+        ]);
+
+        $pdo->commit();
+
+        if ($isAJAX) {
+            echo json_encode([
+                'success'      => true,
+                'redirect_url' => 'form.php',
+            ]);
+            exit;
+        }
+        header('Location: form.php');
+        exit;
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        die("Ошибка: " . $e->getMessage());
+    }
+}
+
+// GET-запрос — показываем страницу с логином/паролем
+$password = $get('password');
+setcookie('password', '', -1, '/');
+?>
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Сохранение заявки</title>
+
+<style>
+body {
+  margin: 0;
+  background: #040613;
+  color: #e0effd;
+  font-family: Montserrat, sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.notification-container {
+  background: #264d8f;
+  border: 1px solid #ffffff;
+  border-radius: 10px;
+  padding: 25px;
+  max-width: 400px;
+  width: 100%;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.notification-title {
+  margin: 0 0 15px;
+  color: #5c9669;
+  font-size: 1.8em;
+}
+
+.credentials {
+  background: #2c2c2c;
+  border: 1px solid #aed7fd;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 20px;
+}
+
+.credentials p {
+  margin: 8px 0;
+  font-size: 1em;
+}
+
+.credential-value {
+  color: #ffffff;
+}
+
+.credentials-note p {
+  margin: 0 0 15px;
+  font-size: 0.95em;
+}
+
+.credentials-form {
+  display: flex;
+  justify-content: center;
+}
+
+.buttons {
+  background: #f14d34;
+  color: #ffffff;
+  border: none;
+  border-radius: 5px;
+  padding: 12px 20px;
+  font-family: Montserrat, sans-serif;
+  font-size: 1em;
+  cursor: pointer;
+  transition: background 0.25s ease;
+}
+
+.buttons:hover {
+  background: #d13f2e;
+}
+
+@media (min-width: 1024px) {
+  .notification-container {
+    max-width: 500px;
+  }
+  .notification-title {
+    font-size: 2em;
+  }
+  .credentials p {
+    font-size: 1.1em;
+  }
+}
+  
+    </style>
+    </head>
+    <body>
+  <div class="notification-container">
+    <h2 class="notification-title">Заявка успешно сохранена!</h2>
+    <div class="credentials">
+      <p>Ваш логин: <strong class="credential-value"><?= $get('username') ?></strong></p>
+      <p>Ваш пароль: <strong class="credential-value"><?= $password ?></strong></p>
+    </div>
+    <div class="credentials-note">
+      <p>Сохраните эти данные для редактирования вашего профиля.</p>
+      <form action="login.php" method="GET" class="credentials-form">
+        <input type="submit" value="Перейти к входу" class="buttons">
+      </form>
+    </div>
+  </div>
+</body>
+
+</html>
